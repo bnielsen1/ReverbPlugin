@@ -99,16 +99,27 @@ void LearningLiveProcessingAudioProcessor::prepareToPlay (double sampleRate, int
     // Save sample rate
     sample_rate = sampleRate;
     samples_per_block = samplesPerBlock;
-    samples_delayed = delay_time * sample_rate;
+    //samples_delayed = delay_time * sample_rate;
+
+    delay_buffers.resize(numChannels);
+    channel_samples_delayed.resize(numChannels);
+    delay_buf_sizes.resize(numChannels);
+
+    for (int channel = 0; channel < numChannels; channel++) {
+        channel_samples_delayed[channel] = static_cast<int>(delay_times[channel % delay_times.size()] * sample_rate);
+
+        delay_buf_sizes[channel] = std::max(channel_samples_delayed[channel], samples_per_block);
+        delay_buffers[channel].resize(delay_buf_sizes[channel], 0.0f);
+    }
 
     // Initalize delay buffer to max delay size
-    delay_buf_size = std::max(samples_delayed, samplesPerBlock);
-    delay_buffer = new float[delay_buf_size];
+    //delay_buf_size = std::max(samples_delayed, samplesPerBlock);
+    //delay_buffer = new float[delay_buf_size];
 
     // zero out delay buffer
-    for (int i = 0; i < delay_buf_size; ++i) {
+    /*for (int i = 0; i < delay_buf_size; ++i) {
         delay_buffer[i] = 0.0f;
-    }
+    }*/
 }
 
 void LearningLiveProcessingAudioProcessor::releaseResources()
@@ -169,34 +180,37 @@ void LearningLiveProcessingAudioProcessor::processBlock (juce::AudioBuffer<float
 
     for (int channel = 0; channel < block.getNumChannels(); ++channel)
     {
-
         auto* channelData = block.getChannelPointer(channel);
 
-        // Write store buffer to output
-        int store_offset = delay_buf_size - std::min(samples_per_block, samples_delayed);
-        for (int sample = 0; sample < block.getNumSamples(); sample++) {
-            channelData[sample] += delay_buffer[sample + store_offset];
-        }
+        for (int split = 0; split < numChannels; split++) {
 
-        // Copy original signal into backup buffer and decrease its volume
-        float* copy_buffer = new float[block.getNumSamples()];
-        for (int sample = 0; sample < block.getNumSamples(); sample++) {
-            if (sample == 1 || sample == 20 || sample == 100) {
-                std::cout << channelData[sample] << "\n";
+            // Copy original signal into backup buffer and decrease its volume
+            float* copy_buffer = new float[block.getNumSamples()];
+            for (int sample = 0; sample < block.getNumSamples(); sample++) {
+                if (sample == 1 || sample == 20 || sample == 100) {
+                    std::cout << channelData[sample] << "\n";
+                }
+                copy_buffer[sample] = channelData[sample];
+                copy_buffer[sample] *= juce::Decibels::decibelsToGain(-5.0); // Drop volume to 75% of original value
             }
-            copy_buffer[sample] = channelData[sample];
-            copy_buffer[sample] *= juce::Decibels::decibelsToGain(-5.0); // Drop volume to 75% of original value
-        }
 
-        // Shift store contents forward (loop starts rightmost unwritten sample)
-        int shift_distance = std::min(samples_per_block, samples_delayed);
-        for (int sample = store_offset - 1; sample >= 0; sample--) {
-            delay_buffer[sample + shift_distance] = delay_buffer[sample];
-        }
+            // Write store buffer to output
+            int store_offset = delay_buf_sizes[split] - std::min(samples_per_block, channel_samples_delayed[split]);
+            for (int sample = 0; sample < block.getNumSamples(); sample++) {
+                channelData[sample] += delay_buffers[split][sample + store_offset];
+            }
 
-        // Insert copy buffer contents into beginning of store buffer
-        for (int sample = 0; sample < block.getNumSamples(); sample++) {
-            delay_buffer[sample] = copy_buffer[sample];
+            // Shift store contents forward (loop starts rightmost unwritten sample)
+            int shift_distance = std::min(samples_per_block, channel_samples_delayed[split]);
+            for (int sample = store_offset - 1; sample >= 0; sample--) {
+                delay_buffers[split][sample + shift_distance] = delay_buffers[split][sample];
+            }
+
+            // Insert copy buffer contents into beginning of store buffer
+            for (int sample = 0; sample < block.getNumSamples(); sample++) {
+                delay_buffers[split][sample] = copy_buffer[sample];
+            }
+
         }
     }
 }
