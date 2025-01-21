@@ -99,27 +99,33 @@ void LearningLiveProcessingAudioProcessor::prepareToPlay (double sampleRate, int
     // Save sample rate
     sample_rate = sampleRate;
     samples_per_block = samplesPerBlock;
-    //samples_delayed = delay_time * sample_rate;
 
-    delay_buffers.resize(numChannels);
+    // OLD
+
+    //delay_buffers.resize(numChannels);
+    //channel_samples_delayed.resize(numChannels);
+    //delay_buf_sizes.resize(numChannels);
+
+    //for (int channel = 0; channel < numChannels; channel++) {
+    //    channel_samples_delayed[channel] = static_cast<int>(delay_times[channel % delay_times.size()] * sample_rate);
+
+    //    delay_buf_sizes[channel] = std::max(channel_samples_delayed[channel], samples_per_block);
+    //    delay_buffers[channel].resize(delay_buf_sizes[channel], 0.0f);
+    //}
+
+    // NEW
+
+    max_delay_in_samples = max_delay * sample_rate;
+
+    delay_buffers = juce::AudioBuffer<float>(numChannels, std::max(max_delay_in_samples, samples_per_block));
+
     channel_samples_delayed.resize(numChannels);
     delay_buf_sizes.resize(numChannels);
 
     for (int channel = 0; channel < numChannels; channel++) {
         channel_samples_delayed[channel] = static_cast<int>(delay_times[channel % delay_times.size()] * sample_rate);
-
         delay_buf_sizes[channel] = std::max(channel_samples_delayed[channel], samples_per_block);
-        delay_buffers[channel].resize(delay_buf_sizes[channel], 0.0f);
     }
-
-    // Initalize delay buffer to max delay size
-    //delay_buf_size = std::max(samples_delayed, samplesPerBlock);
-    //delay_buffer = new float[delay_buf_size];
-
-    // zero out delay buffer
-    /*for (int i = 0; i < delay_buf_size; ++i) {
-        delay_buffer[i] = 0.0f;
-    }*/
 }
 
 void LearningLiveProcessingAudioProcessor::releaseResources()
@@ -178,11 +184,11 @@ void LearningLiveProcessingAudioProcessor::processBlock (juce::AudioBuffer<float
 
     juce::dsp::AudioBlock<float> block{ buffer };
 
-    for (int channel = 0; channel < block.getNumChannels(); ++channel)
+    for (int input_channel = 0; input_channel < block.getNumChannels(); ++input_channel)
     {
-        auto* channelData = block.getChannelPointer(channel);
+        auto* channelData = block.getChannelPointer(input_channel);
 
-        for (int split = 0; split < numChannels; split++) {
+        for (int channel = 0; channel < numChannels; channel++) {
 
             // Copy original signal into backup buffer and decrease its volume
             float* copy_buffer = new float[block.getNumSamples()];
@@ -195,22 +201,19 @@ void LearningLiveProcessingAudioProcessor::processBlock (juce::AudioBuffer<float
             }
 
             // Write store buffer to output
-            int store_offset = delay_buf_sizes[split] - std::min(samples_per_block, channel_samples_delayed[split]);
+            int store_offset = delay_buf_sizes[channel] - std::min(samples_per_block, channel_samples_delayed[channel]);
             for (int sample = 0; sample < block.getNumSamples(); sample++) {
-                channelData[sample] += delay_buffers[split][sample + store_offset];
+                channelData[sample] += delay_buffers.getSample(channel, (sample + store_offset));
             }
 
             // Shift store contents forward (loop starts rightmost unwritten sample)
-            int shift_distance = std::min(samples_per_block, channel_samples_delayed[split]);
+            int shift_distance = std::min(samples_per_block, channel_samples_delayed[channel]);
             for (int sample = store_offset - 1; sample >= 0; sample--) {
-                delay_buffers[split][sample + shift_distance] = delay_buffers[split][sample];
+                delay_buffers.setSample(channel, (sample + shift_distance), delay_buffers.getSample(channel, sample));
             }
 
             // Insert copy buffer contents into beginning of store buffer
-            for (int sample = 0; sample < block.getNumSamples(); sample++) {
-                delay_buffers[split][sample] = copy_buffer[sample];
-            }
-
+            delay_buffers.copyFrom(channel, 0, copy_buffer, block.getNumSamples());
         }
     }
 }

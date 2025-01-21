@@ -58,19 +58,18 @@ private:
     double sample_rate;
     int numChannels = 4;
 
-    //float delay_time = 800 * pow(10, -3);
+    float max_delay = 0.2f;
     std::vector<float> delay_times = { 0.05f, 0.1f, 0.15f, 0.2f };
 
-    //int samples_delayed;
     std::vector<int> channel_samples_delayed;
+    int max_delay_in_samples;
 
     int samples_per_block;
 
-    //int delay_buf_size;
     std::vector<int> delay_buf_sizes;
 
-    //float* delay_buffer;
-    std::vector<std::vector<float>> delay_buffers;
+    //std::vector<std::vector<float>> delay_buffers;
+    juce::AudioBuffer<float> delay_buffers;
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LearningLiveProcessingAudioProcessor)
