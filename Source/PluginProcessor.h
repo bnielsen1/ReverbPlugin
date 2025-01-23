@@ -53,13 +53,16 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
+    juce::AudioBuffer<float> create_delays(juce::AudioBuffer<float> &buffer, int input_channel);
+    juce::AudioBuffer<float> shuffle(juce::AudioBuffer<float>& input_audio, int input_channel);
+
 private:
 
     double sample_rate;
     int numChannels = 4;
 
-    float max_delay = 0.2f;
-    std::vector<float> delay_times = { 0.05f, 0.1f, 0.15f, 0.2f };
+    float max_delay = 0.4f;
+    std::vector<float> delay_times = { 0.1f, 0.2f, 0.3f, 0.4f };
 
     std::vector<int> channel_samples_delayed;
     int max_delay_in_samples;
