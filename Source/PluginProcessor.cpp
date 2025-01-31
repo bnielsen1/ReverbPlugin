@@ -231,7 +231,7 @@ juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::create_delays2(ju
             float delayed_sample = input.getSample(channel, sample);
 
             // Reduce gain of delayed sample when writing to the 
-            delayed_sample = delayed_sample * juce::Decibels::decibelsToGain(-6.0);
+            //delayed_sample = delayed_sample * juce::Decibels::decibelsToGain(-6.0);
 
             delay_buffers[diff].setSample(channel, sample + start_offset, delayed_sample);
         }
@@ -269,84 +269,92 @@ juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::shuffle(juce::Aud
     
 }
 
-void applyHadamardMatrix(juce::AudioBuffer<float>& buffer)
+// This doesn't work for some reason :(
+juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::applyHadamardMatrix(juce::AudioBuffer<float>& buffer)
 {
-    // Ensure the buffer has exactly 4 channels
-    jassert(buffer.getNumChannels() == 4);
+    juce::AudioBuffer<float> output = juce::AudioBuffer<float>(buffer.getNumChannels(), buffer.getNumSamples());
+    output.clear();
 
-    constexpr float hadamardMatrix[4][4] = {
-        {  1.0f,  1.0f,  1.0f,  1.0f },
-        {  1.0f, -1.0f,  1.0f, -1.0f },
-        {  1.0f,  1.0f, -1.0f, -1.0f },
-        {  1.0f, -1.0f, -1.0f,  1.0f }
+    float H[4][4] = {
+    { 1,  1,  1,  1 },
+    { 1, -1,  1, -1 },
+    { 1,  1, -1, -1 },
+    { 1, -1, -1,  1 }
     };
+
+    // Normalize matrix
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            H[i][j] /= sqrt(4);
+        }
+    }
+
+    // Applying hadamard into output
+    // For each column of all input vectors
+    for (int sample = 0; sample < buffer.getNumSamples(); sample++) {
+
+        // Solve for the value of each row of that column
+        for (int row = 0; row < 4; row++) {
+            float summed_value = 0;
+
+            // Calculate each row value in vector times each column value from respective row in matrix
+            for (int i = 0; i < 4; i++) {
+                float vector_val = buffer.getSample(i, sample);
+                float matrix_val = H[row][i];
+
+                summed_value += (vector_val * matrix_val);
+            }
+
+            output.setSample(row, sample, summed_value);
+        }
+    }
+    return output;
+}
+
+// works! thanks deepseek!
+void hadamardMix4Channels(juce::AudioBuffer<float>& buffer)
+{
+    // Ensure we have exactly 4 channels
+    jassert(buffer.getNumChannels() == 4);
 
     const int numSamples = buffer.getNumSamples();
 
-    // Compute input energy for normalization
-    float inputEnergy = 0.0f;
-    for (int channel = 0; channel < 4; ++channel)
+    // Get write pointers for all channels
+    float* ch0 = buffer.getWritePointer(0);
+    float* ch1 = buffer.getWritePointer(1);
+    float* ch2 = buffer.getWritePointer(2);
+    float* ch3 = buffer.getWritePointer(3);
+
+    // Hadamard mixing matrix with scaling factor 1/sqrt(4) = 0.5
+    for (int i = 0; i < numSamples; ++i)
     {
-        const float* readPointer = buffer.getReadPointer(channel);
-        for (int sample = 0; sample < numSamples; ++sample)
-        {
-            inputEnergy += readPointer[sample] * readPointer[sample];
-        }
+        // Read original samples
+        const float in0 = ch0[i];
+        const float in1 = ch1[i];
+        const float in2 = ch2[i];
+        const float in3 = ch3[i];
+
+        // Apply Hadamard matrix mixing
+        ch0[i] = (in0 + in1 + in2 + in3) * 0.5f;
+        ch1[i] = (in0 - in1 + in2 - in3) * 0.5f;
+        ch2[i] = (in0 + in1 - in2 - in3) * 0.5f;
+        ch3[i] = (in0 - in1 - in2 + in3) * 0.5f;
     }
-
-    // Temporary storage for transformed data
-    std::array<std::vector<float>, 4> transformedChannels;
-    for (auto& channel : transformedChannels)
-        channel.resize(numSamples, 0.0f);
-
-    // Apply the Hadamard matrix transformation
-    for (int sample = 0; sample < numSamples; ++sample)
-    {
-        // Transform each sample using the Hadamard matrix
-        for (int row = 0; row < 4; ++row)
-        {
-            float transformedSample = 0.0f;
-            for (int col = 0; col < 4; ++col)
-            {
-                transformedSample += hadamardMatrix[row][col] * buffer.getReadPointer(col)[sample];
-            }
-            transformedChannels[row][sample] = transformedSample;
-        }
-    }
-
-    // Compute transformed energy
-    float transformedEnergy = 0.0f;
-    for (int channel = 0; channel < 4; ++channel)
-    {
-        for (int sample = 0; sample < numSamples; ++sample)
-        {
-            transformedEnergy += transformedChannels[channel][sample] * transformedChannels[channel][sample];
-        }
-    }
-
-    // Calculate normalization factor
-    float normalizationFactor = (transformedEnergy > 0.0f) ? std::sqrt(inputEnergy / transformedEnergy) : 1.0f;
-
-    // Write the transformed data back to the buffer with normalization
-    for (int channel = 0; channel < 4; ++channel)
-    {
-        float* writePointer = buffer.getWritePointer(channel);
-        for (int sample = 0; sample < numSamples; ++sample)
-        {
-            float normalizedSample = transformedChannels[channel][sample] * normalizationFactor;
-
-            // Clip to prevent overflow
-            writePointer[sample] = juce::jlimit(-1.0f, 1.0f, normalizedSample);
-        }
-    }
-
-    DBG("Input Energy: " << inputEnergy);
-    DBG("Transformed Energy: " << transformedEnergy);
-    DBG("Normalization Factor: " << normalizationFactor);
-
 }
 
+juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::diffuse(juce::AudioBuffer<float>& buffer, int diff_count) {
+    juce::AudioBuffer<float> output;
+    output.makeCopyOf(buffer);
 
+    for (int diff = 0; diff < diff_count; diff++) {
+        juce::AudioBuffer<float> d = create_delays2(output, diff);
+        juce::AudioBuffer<float> s = shuffle(d, diff);
+        hadamardMix4Channels(s);
+        output = s;
+    }
+
+    return output;
+}
 
 void LearningLiveProcessingAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
@@ -373,26 +381,29 @@ void LearningLiveProcessingAudioProcessor::processBlock (juce::AudioBuffer<float
     juce::dsp::AudioBlock<float> block{ buffer };
 
     for (int input_channel = 0; input_channel < 1; ++input_channel) {
+
+        //juce::AudioBuffer<float> demo = juce::AudioBuffer<float>(4, 1);
+        //demo.setSample(0, 0, 1);
+        //demo.setSample(1, 0, 2);
+        //demo.setSample(2, 0, -1);
+        //demo.setSample(3, 0, 3);
+
+        //juce::AudioBuffer<float> ht = applyHadamardMatrix(demo);
+
+        //float t1 = ht.getSample(0, 0);
+        //float t2 = ht.getSample(1, 0);
+        //float t3 = ht.getSample(2, 0);
+        //float t4 = ht.getSample(3, 0);
         
         juce::AudioBuffer<float> multichannel_data = split_input(buffer, input_channel);
-        juce::AudioBuffer<float> d1 = create_delays2(multichannel_data, 0);
-        juce::AudioBuffer<float> s1 = shuffle(d1, 0);
-        juce::AudioBuffer<float> d2 = create_delays2(s1, 1);
-        juce::AudioBuffer<float> s2 = shuffle(d2, 1);
-        juce::AudioBuffer<float> d3 = create_delays2(s2, 2);
-        juce::AudioBuffer<float> s3 = shuffle(d3, 2);
-        juce::AudioBuffer<float> d4 = create_delays2(s3, 3);
-        juce::AudioBuffer<float> s4 = shuffle(d4, 3);
-        //juce::AudioBuffer<float> d5 = create_delays2(s4, 4);
-        //juce::AudioBuffer<float> s5 = shuffle(d5, 4);
-        //applyHadamardMatrix(shuffled_data);
+        juce::AudioBuffer<float> output = diffuse(multichannel_data, 3);
 
         //buffer.clear(0, 0, buffer.getNumSamples());
         //buffer.clear(1, 0, buffer.getNumSamples());
 
         for (int channel = 0; channel < numChannels; channel++) {
-            if (channel == 0) buffer.copyFrom(input_channel, 0, s4, channel, 0, block.getNumSamples());
-            else buffer.addFrom(input_channel, 0, s4, channel, 0, block.getNumSamples());
+            if (channel == 0) buffer.copyFrom(input_channel, 0, output, channel, 0, block.getNumSamples());
+            else buffer.addFrom(input_channel, 0, output, channel, 0, block.getNumSamples());
         }
     }
 

@@ -57,13 +57,15 @@ public:
     //juce::AudioBuffer<float> create_delays(juce::AudioBuffer<float> &buffer);
     juce::AudioBuffer<float> create_delays2(juce::AudioBuffer<float>& buffer, int diff);
     juce::AudioBuffer<float> shuffle(juce::AudioBuffer<float>& input, int diff);
+    juce::AudioBuffer<float> applyHadamardMatrix(juce::AudioBuffer<float>& buffer);
+    juce::AudioBuffer<float> diffuse(juce::AudioBuffer<float>& buffer, int diff_count);
 
 private:
 
     double sample_rate;
 
     int numChannels = 8;
-    std::vector<float> delay_steps = { 0.02f, 0.02f, 0.02f, 0.02f };
+    std::vector<float> delay_steps = { 0.01f, 0.02f, 0.04f, 0.08f };
     std::vector<std::vector<float>> delay_times;
     int diffusion_count = delay_steps.size();
 
