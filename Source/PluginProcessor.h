@@ -65,7 +65,7 @@ private:
     // REVERB PRIVATE GLOBALS
 
     double sample_rate;
-    int numChannels = 4;
+    int numChannels = 8;
     int samples_per_block;
 
     // DIFFUSE DELAY VARIABLES

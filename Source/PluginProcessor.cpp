@@ -261,6 +261,38 @@ void householderMix4Channels(juce::AudioBuffer<float>& buffer)
     }
 }
 
+void householderMix8Channels(juce::AudioBuffer<float>& buffer)
+{
+    // Ensure we have exactly 8 channels
+    jassert(buffer.getNumChannels() == 8);
+
+    const int numSamples = buffer.getNumSamples();
+    const float scale = 1.0f / 10.0f; // 1/n for energy preservation
+
+    // Get write pointers for all channels
+    float* channels[8];
+    for (int c = 0; c < 8; ++c)
+        channels[c] = buffer.getWritePointer(c);
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        // Read and sum all inputs
+        float sum = 0.0f;
+        float inputs[8];
+
+        for (int c = 0; c < 8; ++c) {
+            inputs[c] = channels[c][i];
+            sum += inputs[c];
+        }
+
+        // Householder formula: output = input - 2*(sum/8)
+        const float householderTerm = 2.0f * sum * scale;
+
+        for (int c = 0; c < 8; ++c)
+            channels[c][i] = inputs[c] - householderTerm;
+    }
+}
+
 juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::final_delay(juce::AudioBuffer<float>& buffer) {
 
     juce::AudioBuffer<float> output = juce::AudioBuffer<float>(numChannels, buffer.getNumSamples());
@@ -282,13 +314,13 @@ juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::final_delay(juce:
         float dropped_gain = live_clone.getSample(channel, sample);
 
         // Reduce gain of delayed sample when writing
-        dropped_gain = dropped_gain * juce::Decibels::decibelsToGain(-2.0);
+        dropped_gain = dropped_gain * juce::Decibels::decibelsToGain(-1.8f);
 
         live_clone.setSample(channel, sample, dropped_gain);
     }
 
     // Apply householder to latest delay buffer
-    householderMix4Channels(live_clone);
+    householderMix8Channels(live_clone);
 
     // Write the live data + delay buffer data to the beginning of the actual delay_data buffer
     for (int sample = 0; sample < live_clone.getNumSamples(); sample++) {
@@ -440,6 +472,48 @@ void hadamardMix4Channels(juce::AudioBuffer<float>& buffer)
     }
 }
 
+void hadamardMix8Channels(juce::AudioBuffer<float>& buffer)
+{
+    // Ensure we have exactly 8 channels
+    jassert(buffer.getNumChannels() == 8);
+
+    const int numSamples = buffer.getNumSamples();
+    const float scale = 1.0f / std::sqrt(8.0f); // ~0.353553391f
+
+    // Get write pointers for all channels
+    float* ch0 = buffer.getWritePointer(0);
+    float* ch1 = buffer.getWritePointer(1);
+    float* ch2 = buffer.getWritePointer(2);
+    float* ch3 = buffer.getWritePointer(3);
+    float* ch4 = buffer.getWritePointer(4);
+    float* ch5 = buffer.getWritePointer(5);
+    float* ch6 = buffer.getWritePointer(6);
+    float* ch7 = buffer.getWritePointer(7);
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        // Read original samples
+        const float in0 = ch0[i];
+        const float in1 = ch1[i];
+        const float in2 = ch2[i];
+        const float in3 = ch3[i];
+        const float in4 = ch4[i];
+        const float in5 = ch5[i];
+        const float in6 = ch6[i];
+        const float in7 = ch7[i];
+
+        // Apply 8x8 Sylvester Hadamard matrix
+        ch0[i] = (in0 + in1 + in2 + in3 + in4 + in5 + in6 + in7) * scale;
+        ch1[i] = (in0 - in1 + in2 - in3 + in4 - in5 + in6 - in7) * scale;
+        ch2[i] = (in0 + in1 - in2 - in3 + in4 + in5 - in6 - in7) * scale;
+        ch3[i] = (in0 - in1 - in2 + in3 + in4 - in5 - in6 + in7) * scale;
+        ch4[i] = (in0 + in1 + in2 + in3 - in4 - in5 - in6 - in7) * scale;
+        ch5[i] = (in0 - in1 + in2 - in3 - in4 + in5 - in6 + in7) * scale;
+        ch6[i] = (in0 + in1 - in2 - in3 - in4 - in5 + in6 + in7) * scale;
+        ch7[i] = (in0 - in1 - in2 + in3 - in4 + in5 + in6 - in7) * scale;
+    }
+}
+
 juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::diffuse(juce::AudioBuffer<float>& buffer, int diff_count) {
     juce::AudioBuffer<float> output;
     output.makeCopyOf(buffer);
@@ -447,7 +521,7 @@ juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::diffuse(juce::Aud
     for (int diff = 0; diff < diff_count; diff++) {
         juce::AudioBuffer<float> d = create_delays2(output, diff);
         juce::AudioBuffer<float> s = shuffle(d, diff);
-        hadamardMix4Channels(s);
+        hadamardMix8Channels(s);
         output = s;
     }
 
