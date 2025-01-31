@@ -54,17 +54,22 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     juce::AudioBuffer<float> split_input(juce::AudioBuffer<float>& buffer, int input_channel);
-    //juce::AudioBuffer<float> create_delays(juce::AudioBuffer<float> &buffer);
     juce::AudioBuffer<float> create_delays2(juce::AudioBuffer<float>& buffer, int diff);
     juce::AudioBuffer<float> shuffle(juce::AudioBuffer<float>& input, int diff);
     juce::AudioBuffer<float> applyHadamardMatrix(juce::AudioBuffer<float>& buffer);
     juce::AudioBuffer<float> diffuse(juce::AudioBuffer<float>& buffer, int diff_count);
+    juce::AudioBuffer<float> final_delay(juce::AudioBuffer<float>& buffer);
 
 private:
 
-    double sample_rate;
+    // REVERB PRIVATE GLOBALS
 
-    int numChannels = 8;
+    double sample_rate;
+    int numChannels = 4;
+    int samples_per_block;
+
+    // DIFFUSE DELAY VARIABLES
+
     std::vector<float> delay_steps = { 0.01f, 0.02f, 0.04f, 0.08f };
     std::vector<std::vector<float>> delay_times;
     int diffusion_count = delay_steps.size();
@@ -78,15 +83,12 @@ private:
 
     std::vector<juce::AudioBuffer<float>> delay_buffers;
 
-    int samples_per_block;
 
+    // FINAL DELAY VALUES
     
-
-    //std::vector<int> polarities;
-    //std::vector<int> swaps;
-
-    //std::vector<std::vector<float>> delay_buffers;
-    
+    float f_delay_time = 0.2f;
+    juce::AudioBuffer<float> f_delay_buffer;
+    int f_samples_delayed;
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LearningLiveProcessingAudioProcessor)

@@ -132,6 +132,8 @@ void LearningLiveProcessingAudioProcessor::prepareToPlay (double sampleRate, int
     sample_rate = sampleRate;
     samples_per_block = samplesPerBlock;
 
+    // DIFFUSE DELAY INITIALIZATION
+
     // For each diffusion setup delay variables
     for (int diff = 0; diff < diffusion_count; diff++) {
         // Generate delay times for this diffusion
@@ -164,6 +166,12 @@ void LearningLiveProcessingAudioProcessor::prepareToPlay (double sampleRate, int
         delay_buffers.push_back(juce::AudioBuffer<float>(numChannels, max_delays_in_samples[diff] + samples_per_block));
         delay_buffers[diff].clear();
     }
+
+    // FINAL DELAY INITIALIZATION
+
+    f_samples_delayed = static_cast<int>(std::round(f_delay_time * sample_rate));
+    f_delay_buffer = juce::AudioBuffer<float>(1, f_samples_delayed + samples_per_block);
+    f_delay_buffer.clear();
 
 }
 
@@ -212,6 +220,96 @@ juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::split_input(juce:
     }
 
     return split_data;
+}
+
+void householderMix4Channels(juce::AudioBuffer<float>& buffer)
+{
+    // Ensure we have exactly 4 channels
+    jassert(buffer.getNumChannels() == 4);
+
+    const int numSamples = buffer.getNumSamples();
+
+    // Get write pointers for all channels
+    float* ch0 = buffer.getWritePointer(0);
+    float* ch1 = buffer.getWritePointer(1);
+    float* ch2 = buffer.getWritePointer(2);
+    float* ch3 = buffer.getWritePointer(3);
+
+    // Householder mixing matrix coefficients
+    const float scale = 0.25f; // 1/sqrt(4) for energy preservation
+    const float diag = scale;    // Diagonal elements
+    const float offDiag = -scale; // Off-diagonal elements
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        // Read original samples
+        const float in0 = ch0[i];
+        const float in1 = ch1[i];
+        const float in2 = ch2[i];
+        const float in3 = ch3[i];
+
+        // Apply Householder matrix mixing
+        // Matrix structure:
+        // [ diag  offDiag offDiag offDiag ]
+        // [ offDiag diag  offDiag offDiag ]
+        // [ offDiag offDiag diag  offDiag ]
+        // [ offDiag offDiag offDiag diag  ]
+        ch0[i] = diag * in0 + offDiag * in1 + offDiag * in2 + offDiag * in3;
+        ch1[i] = offDiag * in0 + diag * in1 + offDiag * in2 + offDiag * in3;
+        ch2[i] = offDiag * in0 + offDiag * in1 + diag * in2 + offDiag * in3;
+        ch3[i] = offDiag * in0 + offDiag * in1 + offDiag * in2 + diag * in3;
+    }
+}
+
+juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::final_delay(juce::AudioBuffer<float>& buffer) {
+
+    juce::AudioBuffer<float> output = juce::AudioBuffer<float>(numChannels, buffer.getNumSamples());
+    output.clear();
+
+    juce::AudioBuffer<float> live_clone = juce::AudioBuffer<float>(numChannels, buffer.getNumSamples());
+    live_clone.makeCopyOf(buffer);
+
+    int channel = 0;
+
+    // Apply latest delay buffer data to live signal clone
+    for (int sample = 0; sample < buffer.getNumSamples(); sample++) {
+        float delay_data = f_delay_buffer.getSample(channel, sample + f_samples_delayed);
+        live_clone.addSample(channel, sample, delay_data);
+    }
+
+    // Decrease gain on live data
+    for (int sample = 0; sample < live_clone.getNumSamples(); sample++) {
+        float dropped_gain = live_clone.getSample(channel, sample);
+
+        // Reduce gain of delayed sample when writing
+        dropped_gain = dropped_gain * juce::Decibels::decibelsToGain(-2.0);
+
+        live_clone.setSample(channel, sample, dropped_gain);
+    }
+
+    // Apply householder to latest delay buffer
+    householderMix4Channels(live_clone);
+
+    // Write the live data + delay buffer data to the beginning of the actual delay_data buffer
+    for (int sample = 0; sample < live_clone.getNumSamples(); sample++) {
+        float delayed_sample = live_clone.getSample(channel, sample);
+
+        f_delay_buffer.setSample(channel, sample, delayed_sample);
+    }
+
+    // Send latest delay buffer data to output
+    for (int sample = 0; sample < buffer.getNumSamples(); sample++) {
+        float delay_data = f_delay_buffer.getSample(channel, sample + f_samples_delayed);
+        output.addSample(channel, sample, delay_data);
+    }
+
+    // Shift delay buffer data forward by one buffer size
+    for (int sample = f_delay_buffer.getNumSamples() - 1; sample >= samples_per_block; sample--) {
+        float prev_data = f_delay_buffer.getSample(channel, sample - samples_per_block);
+        f_delay_buffer.setSample(channel, sample, prev_data);
+    }
+
+    return output;
 }
 
 juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::create_delays2(juce::AudioBuffer<float>& input, int diff) {
@@ -396,14 +494,18 @@ void LearningLiveProcessingAudioProcessor::processBlock (juce::AudioBuffer<float
         //float t4 = ht.getSample(3, 0);
         
         juce::AudioBuffer<float> multichannel_data = split_input(buffer, input_channel);
-        juce::AudioBuffer<float> output = diffuse(multichannel_data, 3);
+        juce::AudioBuffer<float> diffused_signal = diffuse(multichannel_data, 3);
+        juce::AudioBuffer<float> final_delayed = final_delay(diffused_signal);
 
         //buffer.clear(0, 0, buffer.getNumSamples());
         //buffer.clear(1, 0, buffer.getNumSamples());
 
         for (int channel = 0; channel < numChannels; channel++) {
-            if (channel == 0) buffer.copyFrom(input_channel, 0, output, channel, 0, block.getNumSamples());
-            else buffer.addFrom(input_channel, 0, output, channel, 0, block.getNumSamples());
+            buffer.addFrom(input_channel, 0, final_delayed, channel, 0, block.getNumSamples());
+            buffer.addFrom(input_channel, 0, diffused_signal, channel, 0, block.getNumSamples());
+
+            //if (channel == 0) buffer.copyFrom(input_channel, 0, output, channel, 0, block.getNumSamples());
+            //else buffer.addFrom(input_channel, 0, output, channel, 0, block.getNumSamples());
         }
     }
 
