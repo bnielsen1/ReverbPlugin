@@ -55,29 +55,36 @@ public:
 
     juce::AudioBuffer<float> split_input(juce::AudioBuffer<float>& buffer, int input_channel);
     //juce::AudioBuffer<float> create_delays(juce::AudioBuffer<float> &buffer);
-    juce::AudioBuffer<float> create_delays2(juce::AudioBuffer<float>& buffer);
-    juce::AudioBuffer<float> shuffle(juce::AudioBuffer<float>& input);
+    juce::AudioBuffer<float> create_delays2(juce::AudioBuffer<float>& buffer, int diff);
+    juce::AudioBuffer<float> shuffle(juce::AudioBuffer<float>& input, int diff);
 
 private:
 
     double sample_rate;
 
-    std::vector<float> delay_times = { 0.05f, 0.10f, 0.15f, 0.20f, 0.25f, 0.30f, 0.35f, 0.40f };
-    int numChannels = delay_times.size();
+    int numChannels = 8;
+    std::vector<float> delay_steps = { 0.02f, 0.02f, 0.02f, 0.02f };
+    std::vector<std::vector<float>> delay_times;
+    int diffusion_count = delay_steps.size();
 
-    std::vector<int> channel_samples_delayed;
-    int max_delay_in_samples;
+    std::vector<std::vector<int>> polarities;
+    std::vector<std::vector<int>> swaps;
+
+    std::vector<int> max_delays_in_samples;
+    std::vector<std::vector<int>> channel_samples_delayed;
+    std::vector<std::vector<int>> delay_buf_sizes;
+
+    std::vector<juce::AudioBuffer<float>> delay_buffers;
 
     int samples_per_block;
 
-    std::vector<int> delay_buf_sizes;
-    std::vector<int> delay_start_indexes;
+    
 
-    std::vector<int> polarities;
-    std::vector<int> swaps;
+    //std::vector<int> polarities;
+    //std::vector<int> swaps;
 
     //std::vector<std::vector<float>> delay_buffers;
-    juce::AudioBuffer<float> delay_buffers;
+    
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LearningLiveProcessingAudioProcessor)

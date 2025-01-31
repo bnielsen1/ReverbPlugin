@@ -132,26 +132,39 @@ void LearningLiveProcessingAudioProcessor::prepareToPlay (double sampleRate, int
     sample_rate = sampleRate;
     samples_per_block = samplesPerBlock;
 
-    polarities = gen_polarity_values(numChannels);
-    swaps = gen_swap_values(numChannels);
+    // For each diffusion setup delay variables
+    for (int diff = 0; diff < diffusion_count; diff++) {
+        // Generate delay times for this diffusion
+        std::vector<float> cur_delay_times;
+        for (int channel = 0; channel < numChannels; channel++) {
+            cur_delay_times.push_back((channel + 1) * delay_steps[diff]);
+        }
+        delay_times.push_back(cur_delay_times);
 
-    // DELAY 2 ===========================================================
-    max_delay_in_samples = 0; // Initiate max delay in samples
+        // Initiate to 0 as reference point
+        max_delays_in_samples.push_back(0);
 
-    // Allocate with correct number of channels
-    channel_samples_delayed.resize(numChannels);
-    delay_start_indexes.resize(numChannels);
+        // Create the randomized polarities and swaps for each diffusion
+        polarities.push_back(gen_polarity_values(numChannels));
+        swaps.push_back(gen_swap_values(numChannels));
 
-    // Set max delay and store each channel's individual delay in vector
-    for (int channel = 0; channel < numChannels; channel++) {
-        int delay_in_samples = static_cast<int>(std::round(delay_times[channel] * sample_rate));
-        if (delay_in_samples > max_delay_in_samples) max_delay_in_samples = delay_in_samples;
-        channel_samples_delayed[channel] = delay_in_samples;
+        // Make sure vectors are created and properly sized
+        channel_samples_delayed.push_back({});
+        channel_samples_delayed[diff].resize(numChannels);
+        delay_buf_sizes.push_back({});
+        delay_buf_sizes[diff].resize(numChannels);
+
+        for (int channel = 0; channel < numChannels; channel++) {
+            int delay_in_samples = static_cast<int>(std::round(delay_times[diff][channel] * sample_rate));
+            if (delay_in_samples > max_delays_in_samples[diff]) max_delays_in_samples[diff] = delay_in_samples;
+            channel_samples_delayed[diff][channel] = delay_in_samples;
+        }
+
+        // Create the audio buffer to store delays in and clear it
+        delay_buffers.push_back(juce::AudioBuffer<float>(numChannels, max_delays_in_samples[diff] + samples_per_block));
+        delay_buffers[diff].clear();
     }
 
-    // Create the audio buffer to store delays in and clear it
-    delay_buffers = juce::AudioBuffer<float>(numChannels, max_delay_in_samples + samples_per_block);
-    delay_buffers.clear();
 }
 
 void LearningLiveProcessingAudioProcessor::releaseResources()
@@ -201,7 +214,7 @@ juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::split_input(juce:
     return split_data;
 }
 
-juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::create_delays2(juce::AudioBuffer<float>& input) {
+juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::create_delays2(juce::AudioBuffer<float>& input, int diff) {
 
     // Create output buffer and clear its contents
     juce::AudioBuffer<float> output = juce::AudioBuffer<float>(numChannels, input.getNumSamples());
@@ -211,7 +224,7 @@ juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::create_delays2(ju
     for (int channel = 0; channel < input.getNumChannels(); channel++) {
 
         // Calculate where latest input data should be written to in delay buffer (sooner for delays shorter than max delay)
-        int start_offset = max_delay_in_samples - channel_samples_delayed[channel];
+        int start_offset = max_delays_in_samples[diff] - channel_samples_delayed[diff][channel];
 
         // Write the latest input data to its corresponding delay buffer
         for (int sample = 0; sample < input.getNumSamples(); sample++) {
@@ -220,19 +233,19 @@ juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::create_delays2(ju
             // Reduce gain of delayed sample when writing to the 
             delayed_sample = delayed_sample * juce::Decibels::decibelsToGain(-6.0);
 
-            delay_buffers.setSample(channel, sample + start_offset, delayed_sample);
+            delay_buffers[diff].setSample(channel, sample + start_offset, delayed_sample);
         }
 
         // Send latest delay buffer data to output
         for (int sample = 0; sample < input.getNumSamples(); sample++) {
-            float delay_data = delay_buffers.getSample(channel, sample + max_delay_in_samples);
+            float delay_data = delay_buffers[diff].getSample(channel, sample + max_delays_in_samples[diff]);
             output.addSample(channel, sample, delay_data);
         }
 
         // Shift delay buffer data forward by one buffer size
-        for (int sample = delay_buffers.getNumSamples() - 1; sample >= (start_offset + samples_per_block); sample--) {
-            float prev_data = delay_buffers.getSample(channel, sample - samples_per_block);
-            delay_buffers.setSample(channel, sample, prev_data);
+        for (int sample = delay_buffers[diff].getNumSamples() - 1; sample >= (start_offset + samples_per_block); sample--) {
+            float prev_data = delay_buffers[diff].getSample(channel, sample - samples_per_block);
+            delay_buffers[diff].setSample(channel, sample, prev_data);
         }
     }
 
@@ -240,15 +253,15 @@ juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::create_delays2(ju
 
 }
 
-juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::shuffle(juce::AudioBuffer<float>& input) {
+juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::shuffle(juce::AudioBuffer<float>& input, int diff) {
     juce::AudioBuffer<float> output(input.getNumChannels(), input.getNumSamples());
 
     for (int channel = 0; channel < input.getNumChannels(); channel++) {
-        output.copyFrom(channel, 0, input, swaps[channel], 0, input.getNumSamples());
+        output.copyFrom(channel, 0, input, swaps[diff][channel], 0, input.getNumSamples());
 
         float* buffer = output.getWritePointer(channel);
         for (int sample = 0; sample < output.getNumSamples(); sample++) {
-            buffer[sample] *= polarities[channel];
+            buffer[sample] *= polarities[diff][channel];
         }
     }
 
@@ -362,18 +375,24 @@ void LearningLiveProcessingAudioProcessor::processBlock (juce::AudioBuffer<float
     for (int input_channel = 0; input_channel < 1; ++input_channel) {
         
         juce::AudioBuffer<float> multichannel_data = split_input(buffer, input_channel);
-        juce::AudioBuffer<float> delay_data = create_delays2(multichannel_data);
-        juce::AudioBuffer<float> shuffled_data = shuffle(delay_data);
-        juce::AudioBuffer<float> delay2 = create_delays2(shuffled_data);
-        juce::AudioBuffer<float> output = shuffle(delay2);
+        juce::AudioBuffer<float> d1 = create_delays2(multichannel_data, 0);
+        juce::AudioBuffer<float> s1 = shuffle(d1, 0);
+        juce::AudioBuffer<float> d2 = create_delays2(s1, 1);
+        juce::AudioBuffer<float> s2 = shuffle(d2, 1);
+        juce::AudioBuffer<float> d3 = create_delays2(s2, 2);
+        juce::AudioBuffer<float> s3 = shuffle(d3, 2);
+        juce::AudioBuffer<float> d4 = create_delays2(s3, 3);
+        juce::AudioBuffer<float> s4 = shuffle(d4, 3);
+        //juce::AudioBuffer<float> d5 = create_delays2(s4, 4);
+        //juce::AudioBuffer<float> s5 = shuffle(d5, 4);
         //applyHadamardMatrix(shuffled_data);
 
         //buffer.clear(0, 0, buffer.getNumSamples());
         //buffer.clear(1, 0, buffer.getNumSamples());
 
         for (int channel = 0; channel < numChannels; channel++) {
-            if (channel == 0) buffer.copyFrom(input_channel, 0, output, channel, 0, block.getNumSamples());
-            else buffer.addFrom(input_channel, 0, output, channel, 0, block.getNumSamples());
+            if (channel == 0) buffer.copyFrom(input_channel, 0, s4, channel, 0, block.getNumSamples());
+            else buffer.addFrom(input_channel, 0, s4, channel, 0, block.getNumSamples());
         }
     }
 
