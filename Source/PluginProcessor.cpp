@@ -91,6 +91,37 @@ void LearningLiveProcessingAudioProcessor::changeProgramName (int index, const j
 {
 }
 
+// Helper for random polarities
+std::vector<int> gen_polarity_values(int channel_count) {
+    std::vector<int> result;
+    result.reserve(channel_count); // Reserve space for n entries
+
+    // Seed the random number generator
+    std::srand(static_cast<unsigned int>(std::time(0)));
+
+    // Fill the vector with random 1 or -1
+    for (int i = 0; i < channel_count; ++i) {
+        int randomValue = (std::rand() % 2 == 0) ? 1 : -1;
+        result.push_back(randomValue);
+    }
+
+    return result;
+}
+
+// Generate indicies to swap channels
+std::vector<int> gen_swap_values(int channel_count) {
+    std::vector<int> result(channel_count);
+    for (int i = 0; i < channel_count; ++i) {
+        result[i] = i;
+    }
+
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::shuffle(result.begin(), result.end(), g);
+
+    return result;
+}
+
 //==============================================================================
 void LearningLiveProcessingAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
@@ -100,6 +131,9 @@ void LearningLiveProcessingAudioProcessor::prepareToPlay (double sampleRate, int
     // Save sample rate
     sample_rate = sampleRate;
     samples_per_block = samplesPerBlock;
+
+    polarities = gen_polarity_values(numChannels);
+    swaps = gen_swap_values(numChannels);
 
     // DELAY 2 ===========================================================
     max_delay_in_samples = 0; // Initiate max delay in samples
@@ -206,45 +240,21 @@ juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::create_delays2(ju
 
 }
 
-// Helper for random polarities
-std::vector<int> gen_polarity_values(int channel_count) {
-    std::vector<int> result;
-    result.reserve(channel_count); // Reserve space for n entries
-
-    // Seed the random number generator
-    std::srand(static_cast<unsigned int>(std::time(0)));
-
-    // Fill the vector with random 1 or -1
-    for (int i = 0; i < channel_count; ++i) {
-        int randomValue = (std::rand() % 2 == 0) ? 1 : -1;
-        result.push_back(randomValue);
-    }
-
-    return result;
-}
-
-// Generate indicies to swap channels
-std::vector<int> gen_swap_values(int channel_count) {
-    std::vector<int> result(channel_count);
-    for (int i = 0; i < channel_count; ++i) {
-        result[i] = i;
-    }
-
-    std::random_device rd;
-    std::mt19937 g(rd());
-    std::shuffle(result.begin(), result.end(), g);
-
-    return result;
-}
-
 juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::shuffle(juce::AudioBuffer<float>& input) {
     juce::AudioBuffer<float> output(input.getNumChannels(), input.getNumSamples());
+
+    for (int channel = 0; channel < input.getNumChannels(); channel++) {
+        output.copyFrom(channel, 0, input, swaps[channel], 0, input.getNumSamples());
+
+        float* buffer = output.getWritePointer(channel);
+        for (int sample = 0; sample < output.getNumSamples(); sample++) {
+            buffer[sample] *= polarities[channel];
+        }
+    }
 
     return output;
     
 }
-
-
 
 void applyHadamardMatrix(juce::AudioBuffer<float>& buffer)
 {
@@ -353,15 +363,17 @@ void LearningLiveProcessingAudioProcessor::processBlock (juce::AudioBuffer<float
         
         juce::AudioBuffer<float> multichannel_data = split_input(buffer, input_channel);
         juce::AudioBuffer<float> delay_data = create_delays2(multichannel_data);
-        //juce::AudioBuffer<float> shuffled_data = shuffle(delay_data);
+        juce::AudioBuffer<float> shuffled_data = shuffle(delay_data);
+        juce::AudioBuffer<float> delay2 = create_delays2(shuffled_data);
+        juce::AudioBuffer<float> output = shuffle(delay2);
         //applyHadamardMatrix(shuffled_data);
 
         //buffer.clear(0, 0, buffer.getNumSamples());
         //buffer.clear(1, 0, buffer.getNumSamples());
 
         for (int channel = 0; channel < numChannels; channel++) {
-            if (channel == 0) buffer.copyFrom(input_channel, 0, delay_data, channel, 0, block.getNumSamples());
-            else buffer.addFrom(input_channel, 0, delay_data, channel, 0, block.getNumSamples());
+            if (channel == 0) buffer.copyFrom(input_channel, 0, output, channel, 0, block.getNumSamples());
+            else buffer.addFrom(input_channel, 0, output, channel, 0, block.getNumSamples());
         }
     }
 

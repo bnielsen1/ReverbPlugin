@@ -61,9 +61,9 @@ public:
 private:
 
     double sample_rate;
-    int numChannels = 1;
 
-    std::vector<float> delay_times = { 0.1f };
+    std::vector<float> delay_times = { 0.05f, 0.10f, 0.15f, 0.20f, 0.25f, 0.30f, 0.35f, 0.40f };
+    int numChannels = delay_times.size();
 
     std::vector<int> channel_samples_delayed;
     int max_delay_in_samples;
@@ -72,6 +72,9 @@ private:
 
     std::vector<int> delay_buf_sizes;
     std::vector<int> delay_start_indexes;
+
+    std::vector<int> polarities;
+    std::vector<int> swaps;
 
     //std::vector<std::vector<float>> delay_buffers;
     juce::AudioBuffer<float> delay_buffers;
