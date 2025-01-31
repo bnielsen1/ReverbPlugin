@@ -101,33 +101,23 @@ void LearningLiveProcessingAudioProcessor::prepareToPlay (double sampleRate, int
     sample_rate = sampleRate;
     samples_per_block = samplesPerBlock;
 
-    // OLD
+    // DELAY 2 ===========================================================
+    max_delay_in_samples = 0; // Initiate max delay in samples
 
-    //delay_buffers.resize(numChannels);
-    //channel_samples_delayed.resize(numChannels);
-    //delay_buf_sizes.resize(numChannels);
-
-    //for (int channel = 0; channel < numChannels; channel++) {
-    //    channel_samples_delayed[channel] = static_cast<int>(delay_times[channel % delay_times.size()] * sample_rate);
-
-    //    delay_buf_sizes[channel] = std::max(channel_samples_delayed[channel], samples_per_block);
-    //    delay_buffers[channel].resize(delay_buf_sizes[channel], 0.0f);
-    //}
-
-    // NEW
-
-    max_delay_in_samples = max_delay * sample_rate;
-
-    delay_buffers = juce::AudioBuffer<float>(numChannels, std::max(max_delay_in_samples, samples_per_block));
-    delay_buffers.clear();
-
+    // Allocate with correct number of channels
     channel_samples_delayed.resize(numChannels);
-    delay_buf_sizes.resize(numChannels);
+    delay_start_indexes.resize(numChannels);
 
+    // Set max delay and store each channel's individual delay in vector
     for (int channel = 0; channel < numChannels; channel++) {
-        channel_samples_delayed[channel] = static_cast<int>(delay_times[channel % delay_times.size()] * sample_rate);
-        delay_buf_sizes[channel] = std::max(channel_samples_delayed[channel], samples_per_block);
+        int delay_in_samples = static_cast<int>(std::round(delay_times[channel] * sample_rate));
+        if (delay_in_samples > max_delay_in_samples) max_delay_in_samples = delay_in_samples;
+        channel_samples_delayed[channel] = delay_in_samples;
     }
+
+    // Create the audio buffer to store delays in and clear it
+    delay_buffers = juce::AudioBuffer<float>(numChannels, max_delay_in_samples + samples_per_block);
+    delay_buffers.clear();
 }
 
 void LearningLiveProcessingAudioProcessor::releaseResources()
@@ -162,47 +152,58 @@ bool LearningLiveProcessingAudioProcessor::isBusesLayoutSupported (const BusesLa
 }
 #endif
 
-juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::create_delays(juce::AudioBuffer<float>& buffer, int input_channel) {
-
+juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::split_input(juce::AudioBuffer<float>& buffer, int input_channel) {
     juce::dsp::AudioBlock<float> block{ buffer };
 
     auto* channelData = block.getChannelPointer(input_channel);
 
-    juce::AudioBuffer<float> processed_data = juce::AudioBuffer<float>(numChannels, block.getNumSamples());
-    processed_data.clear();
+    juce::AudioBuffer<float> split_data = juce::AudioBuffer<float>(numChannels, block.getNumSamples());
+    split_data.clear();
 
     for (int channel = 0; channel < numChannels; channel++) {
-
-        // Copy original signal into backup buffer and decrease its volume
-        float* copy_buffer = new float[block.getNumSamples()];
-        for (int sample = 0; sample < block.getNumSamples(); sample++) {
-            if (sample == 1 || sample == 20 || sample == 100) {
-                std::cout << channelData[sample] << "\n";
-            }
-            copy_buffer[sample] = channelData[sample];
-            copy_buffer[sample] *= juce::Decibels::decibelsToGain(-18.0); // Drop volume to 75% of original value
-        }
-
-        // Write store buffer to output
-        int store_offset = delay_buf_sizes[channel] - std::min(samples_per_block, channel_samples_delayed[channel]);
-        for (int sample = 0; sample < block.getNumSamples(); sample++) {
-            //channelData[sample] += delay_buffers.getSample(channel, (sample + store_offset));
-            processed_data.setSample(channel, sample, delay_buffers.getSample(channel, (sample + store_offset)));
-        }
-
-        // Shift store contents forward (loop starts rightmost unwritten sample)
-        int shift_distance = std::min(samples_per_block, channel_samples_delayed[channel]);
-        for (int sample = store_offset - 1; sample >= 0; sample--) {
-            delay_buffers.setSample(channel, (sample + shift_distance), delay_buffers.getSample(channel, sample));
-        }
-
-        // Insert copy buffer contents into beginning of store buffer
-        delay_buffers.copyFrom(channel, 0, copy_buffer, block.getNumSamples());
-
-        delete[] copy_buffer;
+        split_data.copyFrom(channel, 0, buffer, input_channel, 0, block.getNumSamples());
     }
 
-    return processed_data;
+    return split_data;
+}
+
+juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::create_delays2(juce::AudioBuffer<float>& input) {
+
+    // Create output buffer and clear its contents
+    juce::AudioBuffer<float> output = juce::AudioBuffer<float>(numChannels, input.getNumSamples());
+    output.clear();
+
+    // For each individual channel
+    for (int channel = 0; channel < input.getNumChannels(); channel++) {
+
+        // Calculate where latest input data should be written to in delay buffer (sooner for delays shorter than max delay)
+        int start_offset = max_delay_in_samples - channel_samples_delayed[channel];
+
+        // Write the latest input data to its corresponding delay buffer
+        for (int sample = 0; sample < input.getNumSamples(); sample++) {
+            float delayed_sample = input.getSample(channel, sample);
+
+            // Reduce gain of delayed sample when writing to the 
+            delayed_sample = delayed_sample * juce::Decibels::decibelsToGain(-6.0);
+
+            delay_buffers.setSample(channel, sample + start_offset, delayed_sample);
+        }
+
+        // Send latest delay buffer data to output
+        for (int sample = 0; sample < input.getNumSamples(); sample++) {
+            float delay_data = delay_buffers.getSample(channel, sample + max_delay_in_samples);
+            output.addSample(channel, sample, delay_data);
+        }
+
+        // Shift delay buffer data forward by one buffer size
+        for (int sample = delay_buffers.getNumSamples() - 1; sample >= (start_offset + samples_per_block); sample--) {
+            float prev_data = delay_buffers.getSample(channel, sample - samples_per_block);
+            delay_buffers.setSample(channel, sample, prev_data);
+        }
+    }
+
+    return output;
+
 }
 
 // Helper for random polarities
@@ -236,24 +237,14 @@ std::vector<int> gen_swap_values(int channel_count) {
     return result;
 }
 
-juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::shuffle(juce::AudioBuffer<float>& input_audio, int input_channel) {
-    // Generate random flips and polarity swaps
-    std::vector<int> polarities = gen_polarity_values(numChannels);
-    std::vector<int> swaps = gen_swap_values(numChannels);
+juce::AudioBuffer<float> LearningLiveProcessingAudioProcessor::shuffle(juce::AudioBuffer<float>& input) {
+    juce::AudioBuffer<float> output(input.getNumChannels(), input.getNumSamples());
 
-    // flipping polarities
-    for (int i = 0; i < polarities.size(); i++) {
-        input_audio.applyGain(i, 0, input_audio.getNumSamples(), polarities[i]);
-    }
-
-    // swapping channels
-    juce::AudioBuffer<float> output_audio = juce::AudioBuffer<float>(input_audio.getNumChannels(), input_audio.getNumSamples());
-    for (int i = 0; i < swaps.size(); i++) {
-        output_audio.copyFrom(i, 0, input_audio, swaps[i], 0, input_audio.getNumSamples());
-    }
-
-    return output_audio;
+    return output;
+    
 }
+
+
 
 void applyHadamardMatrix(juce::AudioBuffer<float>& buffer)
 {
@@ -340,9 +331,6 @@ void LearningLiveProcessingAudioProcessor::processBlock (juce::AudioBuffer<float
     auto totalNumInputChannels  = getTotalNumInputChannels();
     auto totalNumOutputChannels = getTotalNumOutputChannels();
 
-    // Make input signal stereo
-    buffer.copyFrom(1, 0, buffer, 0, 0, buffer.getNumSamples());
-
     // In case we have more outputs than inputs, this code clears any output
     // channels that didn't contain input data, (because these aren't
     // guaranteed to be empty - they may contain garbage).
@@ -361,20 +349,24 @@ void LearningLiveProcessingAudioProcessor::processBlock (juce::AudioBuffer<float
 
     juce::dsp::AudioBlock<float> block{ buffer };
 
-    for (int input_channel = 0; input_channel < block.getNumChannels(); ++input_channel) {
-
-        juce::AudioBuffer<float> delay_data = create_delays(buffer, input_channel);
-        juce::AudioBuffer<float> shuffled_data = shuffle(delay_data, input_channel);
-        applyHadamardMatrix(shuffled_data);
+    for (int input_channel = 0; input_channel < 1; ++input_channel) {
+        
+        juce::AudioBuffer<float> multichannel_data = split_input(buffer, input_channel);
+        juce::AudioBuffer<float> delay_data = create_delays2(multichannel_data);
+        //juce::AudioBuffer<float> shuffled_data = shuffle(delay_data);
+        //applyHadamardMatrix(shuffled_data);
 
         //buffer.clear(0, 0, buffer.getNumSamples());
         //buffer.clear(1, 0, buffer.getNumSamples());
 
         for (int channel = 0; channel < numChannels; channel++) {
-            if (channel == 0) buffer.copyFrom(input_channel, 0, shuffled_data, channel, 0, block.getNumSamples());
-            else buffer.addFrom(input_channel, 0, shuffled_data, channel, 0, block.getNumSamples());
+            if (channel == 0) buffer.copyFrom(input_channel, 0, delay_data, channel, 0, block.getNumSamples());
+            else buffer.addFrom(input_channel, 0, delay_data, channel, 0, block.getNumSamples());
         }
     }
+
+    // Make input signal stereo
+    buffer.copyFrom(1, 0, buffer, 0, 0, buffer.getNumSamples());
 
 }
 
